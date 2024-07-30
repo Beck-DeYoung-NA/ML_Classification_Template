@@ -9,16 +9,51 @@ from tenacity import RetryCallState, retry, stop_after_attempt, wait_fixed
 
 # Constants
 MAX_TOKENS_GPT4 = 127000
-MAX_TOKENS_GPT3 = 15600
 RUNNING_COST = 0
 
-MODEL = 'gpt-4-turbo'
+DEFAULT_MODEL = 'gpt-4-turbo'
+
+PRICE = {
+    'gpt-3.5-turbo':
+        {
+             "INPUT": 0.00050 / 1000,
+             "OUTPUT": 0.00150 / 1000
+        },
+        
+    'gpt-4-turbo':
+        {
+             "INPUT": 0.0100 / 1000,
+             "OUTPUT": 0.0300 / 1000
+        },
+    
+    'gpt-4o':
+        {
+             "INPUT": 0.0050 / 1000,
+             "OUTPUT": 0.0150 / 1000
+        },
+        
+    'gpt-4':
+        {
+             "INPUT": 0.0300 / 1000,
+             "OUTPUT": 0.0600 / 1000
+        },
+   
+}
 
 # --------------------------------------------------------- #
 # --------------- CFA 683 Specific Functions -------------- #
 # --------------------------------------------------------- #
 
-def load_data(file_path: str) -> Tuple[pd.DataFrame, Dict[str,str]]:
+def load_data_q_set(file_path: str) -> Tuple[pd.DataFrame, Dict[str,str]]:
+    """This function is for if the data is in the format with column headers like 'Q1. Context of Q1', 'Q2. Context of Q2', etc.
+
+    Args:
+        file_path (str): File path to the data
+
+    Returns:
+        Tuple[pd.DataFrame, Dict[str,str]]: Tuple of the dataframe and the question set
+    """
+    
     df = pd.read_excel(file_path, na_values=["NA", 'REF', ""])
     
     # Extracting the question number and the question from the column names
@@ -29,31 +64,50 @@ def load_data(file_path: str) -> Tuple[pd.DataFrame, Dict[str,str]]:
     
     return df, qs
 
-def normal_extract(client: OpenAI, df, col, n, context):
+
+# --------------------------------------------------------- #
+# ----------------- Extraction Variations ----------------- #
+# --------------------------------------------------------- #
+
+def normal_extract(client: OpenAI, df: pd.DataFrame, col: str, n: int, context: str, model: str = DEFAULT_MODEL) -> List[str]:
+    """_summary_
+
+    Args:
+        client (OpenAI): OpenAI API Client
+        df (pd.DataFrame): Input DataFrame
+        col (str): Column to extract topics from
+        n (int): Number of topics to extract
+        context (str): Additional context to provide to the model
+        model (str, optional): Model name. Defaults to DEFAULT_MODEL.
+
+    Returns:
+        List[str]: List of extracted topics
+    """
+    
     context = f"Interviewees were asked to respond to the following prompt : '{context}'."
     
-    normal_topics = extractCommonTopics(client, df[col].dropna().tolist(), n=n, model=MODEL, context=context)
+    normal_topics = extractCommonTopics(client, df[col].dropna().tolist(), n=n, model=model, context=context)
     
     return normal_topics
 
-def shuffle_extract(client: OpenAI, df: pd.DataFrame, col: str, n: int, context: str) -> List[str]:
+def shuffle_extract(client: OpenAI, df: pd.DataFrame, col: str, n: int, context: str, model=DEFAULT_MODEL) -> List[str]:
     context = f"Interviewees were asked to respond to the following prompt : '{context}'."
     df = df.copy().sample(frac=1)
     
-    shuffle_topics = extractCommonTopics(client, df[col].dropna().tolist(), n=n, model=MODEL, context=context)
+    shuffle_topics = extractCommonTopics(client, df[col].dropna().tolist(), n=n, model=model, context=context)
     
     return sorted(shuffle_topics)   
 
-def shuffle_extract_w_defs(client: OpenAI, df: pd.DataFrame, col: str, n: int, context: str, model=MODEL ) -> List[str]:
+def shuffle_extract_w_defs(client: OpenAI, df: pd.DataFrame, col: str, context: str, topics, model=DEFAULT_MODEL ) -> List[str]:
     context = f"Interviewees were asked to respond to the following prompt : '{context}'."
     df = df.copy().sample(frac=1)
     
-    shuffle_topics = extractCommonTopicsWDefs(client, df[col].dropna().tolist(), n=n, model=model, context=context)
+    shuffle_topics = extractCommonTopicsWDefs(client, df[col].dropna().tolist(),  model=model, context=context, topics=topics)
     # Sort the topics based on dictionary keys
     
     return {k: v for k, v in sorted(shuffle_topics.items(), key=lambda item: item[0])}   
 
-def subset_extract(client: OpenAI, df: pd.DataFrame, col: str, n: int, context: str) -> List[str]:
+def subset_extract(client: OpenAI, df: pd.DataFrame, col: str, n: int, context: str, model=DEFAULT_MODEL) -> List[str]:
     context = f"Interviewers provided a rating of if they agreed to the statement : '{context}'. They were then asked to provide their reasoning."
     
     shuffled_df = df.sample(frac=1)
@@ -62,9 +116,9 @@ def subset_extract(client: OpenAI, df: pd.DataFrame, col: str, n: int, context: 
     subset2 = shuffled_df.iloc[int(len(shuffled_df)/3):int(len(shuffled_df)/3)*2]
     subset3 = shuffled_df.iloc[int(len(shuffled_df)/3)*2:]
     
-    subset1_topics = extractCommonTopics(client, subset1[col].dropna().tolist(), n=n, model=MODEL, context=context)
-    subset2_topics = extractCommonTopics(client, subset2[col].dropna().tolist(), n=n, model=MODEL, context=context)
-    subset3_topics = extractCommonTopics(client, subset3[col].dropna().tolist(), n=n, model=MODEL, context=context)
+    subset1_topics = extractCommonTopics(client, subset1[col].dropna().tolist(), n=n, model=model, context=context)
+    subset2_topics = extractCommonTopics(client, subset2[col].dropna().tolist(), n=n, model=model, context=context)
+    subset3_topics = extractCommonTopics(client, subset3[col].dropna().tolist(), n=n, model=model, context=context)
     
     return sorted(list(set(subset1_topics + subset2_topics + subset3_topics)))
 
@@ -80,18 +134,18 @@ def get_agree_disagree(df: pd.DataFrame, col: str, context: str) -> Tuple[pd.Dat
     return agree, disagree, agree_context, disagree_context
 
 
-def agree_disagree_extract(client: OpenAI, df: pd.DataFrame, col: str, n_dict: Dict, context: str) -> List[str]:
+def agree_disagree_extract(client: OpenAI, df: pd.DataFrame, col: str, n_dict: Dict, context: str, model=DEFAULT_MODEL) -> List[str]:
     
     agree, disagree, agree_context, disagree_context = get_agree_disagree(df, col, context)
     
-    agree_topics = extractCommonTopics(client, agree[col].dropna().tolist(), n=n_dict['Agree'], model=MODEL, context=agree_context)
-    disagree_topics = extractCommonTopics(client, disagree[col].dropna().tolist(), n=n_dict['Disagree'], model=MODEL, context=disagree_context)
+    agree_topics = extractCommonTopics(client, agree[col].dropna().tolist(), n=n_dict['Agree'], model=model, context=agree_context)
+    disagree_topics = extractCommonTopics(client, disagree[col].dropna().tolist(), n=n_dict['Disagree'], model=model, context=disagree_context)
     
     return {'Agree': sorted(agree_topics), 'Disagree': sorted(disagree_topics)}
 
 
 def paycheck_vs_passion_extract(client: OpenAI, df: pd.DataFrame, rating_col: str, a_col: str,
-                                n_dict: Dict[str, int]) -> Dict[str, List[str]]:
+                                n_dict: Dict[str, int], model=DEFAULT_MODEL) -> Dict[str, List[str]]:
     context = "Interviewers were asked if they worked for Chikfila due to Passion or Paycheck. They provided rankings from 1-10."
     df2 = df.copy().dropna(subset=[a_col])
     
@@ -104,9 +158,9 @@ def paycheck_vs_passion_extract(client: OpenAI, df: pd.DataFrame, rating_col: st
     passion_context = f"{context}. The following responses are from interviewers who chose rankings corresponding to 'Passion' for their rating."
     neutral_context = f"{context}. The following responses are from interviewers who chose rankings corresponding to 'Neutral' for their rating."
     
-    paycheck_topics = extractCommonTopics(client, paycheck[a_col].tolist(), n=n_dict['Paycheck'], model=MODEL, context=paycheck_context)
-    passion_topics = extractCommonTopics(client, passion[a_col].tolist(), n=n_dict['Passion'], model=MODEL, context=passion_context)
-    neutral_topics = extractCommonTopics(client, neutral[a_col].tolist(), n=n_dict['Neutral'], model=MODEL, context=neutral_context)
+    paycheck_topics = extractCommonTopics(client, paycheck[a_col].tolist(), n=n_dict['Paycheck'], model=model, context=paycheck_context)
+    passion_topics = extractCommonTopics(client, passion[a_col].tolist(), n=n_dict['Passion'], model=model, context=passion_context)
+    neutral_topics = extractCommonTopics(client, neutral[a_col].tolist(), n=n_dict['Neutral'], model=model, context=neutral_context)
     
     return {'Paycheck': sorted(paycheck_topics), 'Passion': sorted(passion_topics), 'Neutral': sorted(neutral_topics)}
 
@@ -242,7 +296,7 @@ def extractCommonTopics(client: OpenAI, verbatims: pd.Series, n:int, model: str,
         response_format={'type': 'json_object'}
     )
     
-    cost = (gpt_resp.usage.completion_tokens * 0.03 / 1000) + (gpt_resp.usage.prompt_tokens * 0.01 / 1000)
+    cost = (gpt_resp.usage.prompt_tokens * PRICE[model]["INPUT"]) + (gpt_resp.usage.completion_tokens * PRICE[model]["OUTPUT"])
     RUNNING_COST += cost
     
     print(f'Cost For Running Topic Extraction: ${cost:.2f}')
@@ -251,9 +305,8 @@ def extractCommonTopics(client: OpenAI, verbatims: pd.Series, n:int, model: str,
 
     return topics['topics']
 
-
 @retry(wait=wait_fixed(30), stop=stop_after_attempt(2),after=logAttemptNumber)
-def extractCommonTopicsWDefs(client: OpenAI, verbatims: pd.Series, n:int, model: str, context: str) -> Dict[str, str]:
+def extractCommonTopicsWDefs(client: OpenAI, verbatims: pd.Series, model: str, context: str, topics) -> Dict[str, str]:
     """
     Extract the {n} most common topics from a large set of text verbatims using an OpenAI Chat Model.
 
@@ -273,9 +326,11 @@ def extractCommonTopicsWDefs(client: OpenAI, verbatims: pd.Series, n:int, model:
     # Set up the prompt
     # {'topics': ["Topic 1", "Topic 2", "Topic 3", ...] }
     prompt = f"""
-                {context} From the following open-ended interview responses, extract the {n} most common topics discussed. Only include the {n} most common topics and label the topics with 4 or less words.
+                {context} You are given the following open-ended interview responses and a list of the most common topics discussed in those responses.
                 
-                For each extracted topic, include a 1-2 description of what types of responses the given topic encompasses. 
+                For each topic, include a 1 sentence description of what types of responses the given topic encompasses. 
+                
+                Here are the list of topics to define: \n {topics} \n /n-/n
 
                 Return a JSON object of the following form: """ + \
                 """ 
@@ -297,10 +352,6 @@ def extractCommonTopicsWDefs(client: OpenAI, verbatims: pd.Series, n:int, model:
     n_tokens = getNumTokens(prompt)                
     print(f"Number of Tokens in Prompt: {n_tokens}") 
     
-    if  n_tokens > MAX_TOKENS_GPT4:
-        raise ValueError(f"Too many tokens for any model. Clean up the verbatims or chunk them. Max tokens is {MAX_TOKENS_GPT4}")
-    
-            
     # Ask the large language model to extract the topics
     gpt_resp =  client.chat.completions.create(
         model = model,
@@ -313,7 +364,7 @@ def extractCommonTopicsWDefs(client: OpenAI, verbatims: pd.Series, n:int, model:
         response_format={'type': 'json_object'}
     )
     
-    cost = (gpt_resp.usage.completion_tokens * 0.03 / 1000) + (gpt_resp.usage.prompt_tokens * 0.01 / 1000)
+    cost = (gpt_resp.usage.prompt_tokens * PRICE[model]["INPUT"]) + (gpt_resp.usage.completion_tokens * PRICE[model]["OUTPUT"])
     RUNNING_COST += cost
     
     print(f'Cost For Running Topic Extraction: ${cost:.2f}')
@@ -358,7 +409,7 @@ def createMultiLabelPrompt(text_input: str, labels: List[str], context: str, out
     return role, prompt
 
 @retry(wait=wait_fixed(30), stop=stop_after_attempt(4),after=logAttemptNumber)
-def multiclassifyVerbatim(client: OpenAI, verbatim: str, topics: List[str], context: str, id: int, model: str = MODEL, i:int = None, max_labels = 4, n_resp = 1) -> pd.DataFrame:
+def multiclassifyVerbatim(client: OpenAI, verbatim: str, topics: List[str], context: str, id: int, model: str = DEFAULT_MODEL, i:int = None, max_labels = 4, n_resp = 1) -> pd.DataFrame:
     """Classify a verbatim into one or more of the given topics using a language model.
 
     Args:
@@ -395,7 +446,7 @@ def multiclassifyVerbatim(client: OpenAI, verbatim: str, topics: List[str], cont
         response_format={'type': 'json_object'}
     )
     
-    cost = (gpt_resp.usage.completion_tokens * 0.03 / 1000) + (gpt_resp.usage.prompt_tokens * 0.01 / 1000)
+    cost = (gpt_resp.usage.prompt_tokens * PRICE[model]["INPUT"]) + (gpt_resp.usage.completion_tokens * PRICE[model]["OUTPUT"])
     RUNNING_COST += cost
     # resp = resp.replace("'s", "s") # Remove apostrophe s from the model output because it messes up the eval function
     labels = json.loads(gpt_resp.choices[0].message.content)
@@ -420,7 +471,7 @@ def multiclassifyVerbatim(client: OpenAI, verbatim: str, topics: List[str], cont
         response_format={'type': 'json_object'}
     )
     
-        cost = (gpt_resp.usage.completion_tokens * 0.03 / 1000) + (gpt_resp.usage.prompt_tokens * 0.01 / 1000)
+        cost = (gpt_resp.usage.prompt_tokens * PRICE[model]["INPUT"]) + (gpt_resp.usage.completion_tokens * PRICE[model]["OUTPUT"])
         RUNNING_COST += cost
         # resp = resp.replace("'s", "s") # Remove apostrophe s from the model output because it messes up the eval function
         labels = json.loads(gpt_resp.choices[0].message.content)
@@ -448,7 +499,150 @@ def multiclassifyVerbatim(client: OpenAI, verbatim: str, topics: List[str], cont
             df[key] = labels[key]
             
     return df
+
+
+def createMultiLabelPromptwDefs(text_input: str, labels: Dict[str, str], context: str, output_format: str =None, n_max: int = 5) -> tuple[str, str]:
+    """Create the prompt for multilabel classification
+
+    Args:
+        text_input (str): Input verbatim to classify
+        labels (List[str]): List of classification topics for the model to choose from
+        context (str): Context about the topic to be given to the model about what the verbatims are discussing.
+        output_format (str, optional): Format for GPT To output
+        examples (List[str], optional): One or multi-shot examples to provide the model
+        n_max (int, optional): Maximum number of topics for the model to classify a single verbatim. Defaults to 5.
+
+    Returns:
+        tuple[str, str]: both the role of the model and the prompt
+    """
     
+    # Setting the system role
+    role = f"""You are a highly intelligent and accurate multi-label classification system. You take a passage as input and classify it into at most {n_max} appropriate classes from a given category list. Only use topics that are truly appropriate, even if that means you only classify a response with one topic. 
+                If none of the topics apply to the response, return 'Other' as the main class and do not include further categories. Once again, only select topics that truly align with the response. 
+    """
+    
+    # Setting the main description
+    prompt = f"""Below is from an excerpt from an interview. {context}.
+                
+                You are to classify the response into at most {n_max} appropriate categories. If none of the topics apply to the response, return 'Other' as the main class and do not include further categories. Once again, only select topics that without a doubt align with the response. 
+                
+                Here are the topics you can choose from along with their associated defintions. Ignore backslashes: {str(labels)}
+                 
+    """
+
+    output_format = output_format or "{'main_class': Main Classification Category ,'Class_2': 2nd level Classification Category, 'Class_3': 3rd level Classification Category, ...}"
+    prompt += f"Your output format is a JSON object of the form {output_format}.\n"
+
+    prompt += f"Input: {text_input}\nOutput:"
+
+    return role, prompt
+
+
+
+@retry(wait=wait_fixed(30), stop=stop_after_attempt(4),after=logAttemptNumber)
+def multiclassifyVerbatimwDefs(client: OpenAI, verbatim: str, topics: Dict[str, str], context: str, id: int, model: str = DEFAULT_MODEL, i:int = None, max_labels = 4, n_resp = 1) -> pd.DataFrame:
+    """Classify a verbatim into one or more of the given topics using a language model.
+
+    Args:
+        verbatim (str): The verbatim text to classify.
+        topics (List[str]): List of available topics.
+        context (str): Context about the topic to be given to the model about what the verbatims are discussing.
+        model (str): The name of the language model to use.
+        id (int): The id of the verbatim
+        i (int, optional): Verbatim number for printing progress
+        max_labels (int, optional): Maximum number of topics for the model to classify a single verbatim. Defaults to 4.
+        n_resp (int, optional): Number of Resposnes to Generate. Used for consistency analysis
+
+    Returns:
+        pd.DataFrame: Wide dataframe of classifications
+    """
+    global RUNNING_COST
+    if i is not None:
+        print(f'Classifying Verbatim Number: {i + 1}')
+        
+    # Set up the prompt and role  
+    role, prompt = createMultiLabelPromptwDefs(labels = topics, 
+                                          text_input=verbatim,
+                                          context=context,
+                                          n_max = max_labels)   
+    
+    gpt_resp =  client.chat.completions.create(
+        model = model,
+        messages = [{"role": "system", "content": role},
+                    {"role": "user", "content": prompt}],
+        temperature = 0,
+        top_p = 0.1,
+        n = n_resp, 
+        stop = None,
+        response_format={'type': 'json_object'}
+    )
+    
+    cost = (gpt_resp.usage.completion_tokens * 0.03 / 1000) + (gpt_resp.usage.prompt_tokens * 0.01 / 1000)
+    RUNNING_COST += cost
+    # resp = resp.replace("'s", "s") # Remove apostrophe s from the model output because it messes up the eval function
+    labels = json.loads(gpt_resp.choices[0].message.content)
+    
+    # Make sure all labels are in the labels list
+    attempts = 1
+    not_in = [label for label in labels.values() if label not in list(topics.keys()) + ['Other']]
+    
+    
+    while len(not_in) > 0 and attempts < 4:
+        print(not_in)
+        print(topics)
+        
+        gpt_resp =  client.chat.completions.create(
+        model = model,
+        messages = [{"role": "system", "content": role},
+                    {"role": "user", "content": prompt}],
+        temperature = 0.5, # Increase temperature to get more diverse responses
+        top_p = 0.5,
+        n = n_resp, 
+        stop = None,
+        response_format={'type': 'json_object'}
+    )
+    
+        cost = (gpt_resp.usage.completion_tokens * 0.03 / 1000) + (gpt_resp.usage.prompt_tokens * 0.01 / 1000)
+        RUNNING_COST += cost
+        # resp = resp.replace("'s", "s") # Remove apostrophe s from the model output because it messes up the eval function
+        labels = json.loads(gpt_resp.choices[0].message.content)
+        not_in = [label for label in labels.values() if label not in list(topics.keys()) + ['Other']]
+        attempts += 1
+    
+    if attempts == 3:
+        print(f"Could not get the right labels for verbatim {id}")
+        # Replace the bad labels with 'Other'
+        for key in labels.keys():
+            if labels[key] not in topics.keys():
+                if 'Other' in labels.values():
+                    labels[key] = np.nan
+                else:
+                    labels[key] = 'Other'
+    elif attempts > 1:
+        print(f"Got the right labels for verbatim {id} on attempt {attempts}")
+    
+    # Convert the output to a dataframe
+    df: pd.DataFrame = pd.DataFrame([id], columns=['NAID'])
+    for key in labels.keys():
+        if key == 'main_class':
+            df['Class_1'] = labels[key]
+        else:
+            df[key] = labels[key]
+            
+    return df
+    
+    
+def get_topic_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Function to get the counts of the topics extracted from the verbatim
+    """
+    # Get the counts of each topic in columns Class_1, Class_2, Class_3, ...
+    topic_counts = pd.concat([df[col].value_counts() for col in df.columns if col.startswith("Class")], axis=1).fillna(0)
+    # Sum the counts of each topic
+    topic_counts['Total'] = topic_counts.sum(axis=1).astype(int)
+    # Sort the topics by the total count
+    topic_counts = topic_counts.sort_values(by='Total', ascending=False)
+    return topic_counts[['Total']]
     
 def get_running_cost():
     global RUNNING_COST

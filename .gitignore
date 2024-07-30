@@ -1,0 +1,33 @@
+# Python Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# Python virtual environment
+venv/
+env/
+
+# Compiled Python files
+*.pyc
+*.pyo
+__pycache__/
+
+# Logs and temporary files
+*.log
+*.pid
+*.sock
+*.swp
+*~
+
+# Data and model files
+data/
+models/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Any xlsx files
+*.xlsx
+*.csv
+
+server_user_id.txt
